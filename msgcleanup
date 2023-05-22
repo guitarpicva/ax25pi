@@ -1,0 +1,183 @@
+#! /usr/bin/perl
+#----------------------------------------------------------------------------
+# ax25mail-tools
+#
+# msgcleanup - scan the message list and delete all messages with exceeded
+#           lifetime (mark them as deleted and delete message files)
+#           The message list is truncated to first present or first
+#           expired message, it's not changed when no messages expire.
+#
+# Version 0.02
+#
+# (c) Radek Burget OK2JBG <xburge01@stud.fee.vutbr.cz> 1999
+#
+# Usage: msgcleanup <BBS_CALL>
+#----------------------------------------------------------------------------
+
+# Normal settings:
+#List path
+$LIST_PATH = "/var/ax25/ulistd";
+
+#Bulletin path
+$BULLETIN_PATH = "/var/ax25/mail";
+
+#Settings file
+$CONF_FILE = "/etc/ax25/bulletins";
+
+#Temp output file
+$TEMP_FILE = "/tmp/msgcleanup_temp.$$";
+
+#Default lifetime (days)
+$DEF_LIFE = 30;
+
+#----------------------------------------------------------------------------
+
+#Seconds a day
+$SEC_A_DAY = 24*3600;
+
+#----------------------------------------------------------------------------
+# Bulletin list format
+format TEMP =
+@ @>>>>> @<<<<<@<<<<<< @<<<<< @<<<<< @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+$binfo[1], $binfo[2], $binfo[3], $binfo[4], $binfo[5], $binfo[6], $subj
+.
+
+#----------------------------------------------------------------------------
+
+if (@ARGV != 1)
+{
+  print "Usage: msgcleanup <BBS_CALL>\n";
+  exit 0;
+}
+
+#Number of deleted messages
+$deleted = 0;
+
+#Output flag
+$output = 0;
+
+$bbsname = uc $ARGV[0];
+
+# Open files
+$bbs_dir = $BULLETIN_PATH . "/" . $bbsname;
+die "The bulletin directory for $bbsname ($bbs_dir) doesn't exist\n" unless -d $bbs_dir;
+
+$list_name = $LIST_PATH . "/" . $bbsname;
+open LIST, $list_name or die "Cannot open list file for $bbsname ($list_name)\n";
+
+# Read config file to the 'lifes' hash
+$conf_name = $CONF_FILE . "." . $bbsname;
+open CONF, $conf_name or print "$0 : Warning : No config file for $bbsname - using defaults\n";
+
+while (<CONF>)
+{
+  chop;
+  if ($_ !~ /^#/) 
+  {
+    @line = split /\W+/;
+    if (@line == 2)
+    {
+      $lifes{uc $line[0]} = $line[1];
+    }
+    else
+    {
+      die "Invalid line in config file ($_)\n"
+    }
+  }
+}
+
+close CONF;
+
+# Open temp output
+open TEMP, ">".$TEMP_FILE or die "Cannot write to $TEMP_FILE\n";
+
+# Change default lifetime if specified
+$DEF_LIFE = $lifes{'DEFAULT'} if $lifes{'DEFAULT'};
+print "Default bulletin lifetime: $DEF_LIFE day(s)\n";
+
+# Scan the list and compare the dates
+$now = time;
+
+while (<LIST>)
+{
+  chop;
+
+  # Read and split message info
+  @binfo = split /\s+/;
+  $num = $binfo[0];    #first entry - message number
+  $flag = $binfo[1];   #second entry - flags
+
+  # Split destination to NAME and @FWD
+  if ($binfo[3] =~ /@/)
+  {
+    for ($i = @binfo; $i >= 4; $i--) {$binfo[$i+1] = $binfo[$i];}
+    $binfo[4] = substr $binfo[3], index($binfo[3], "@");
+    $binfo[3] = substr $binfo[3], 0, index($binfo[3], "@");
+  }
+  if ($binfo[4] !~ /^@/)
+  {
+    for ($i = @binfo; $i >= 4; $i--) {$binfo[$i+1] = $binfo[$i];}
+    $binfo[4] = "";
+  }
+
+  $bname = $binfo[3];  #bulletin name
+
+  # Extract subject
+  if ($flag =~ /#/)
+  {
+    $subj = "";
+  }
+  else
+  {
+    $subj = substr $_, index($_, $binfo[6])+7;
+  }
+
+  # Read message file info
+  ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+                        $atime,$mtime,$ctime,$blksize,$blocks) 
+                            = stat($bbs_dir."/".$num);
+
+  # $nlink should be >0 when the file exists
+  if ($nlink && ($flag =~ /[P,B]/))
+  {
+    $output = 1;
+    ### determine the lifetime for this message ###
+    if ($lifes{$bname}) {$lifetime = $lifes{$bname};} 
+                   else {$lifetime = $DEF_LIFE;}
+    ### lifetime in seconds ###
+    $lifetime *= $SEC_A_DAY;
+    ### check the message dates ###
+    if ($mtime < ($now - $lifetime)) 
+    {
+      $binfo[1] = "D"; ##FLAG = DELETED
+      unlink($bbs_dir."/".$num);
+      $deleted++;
+    }
+  }
+
+  if ($output)
+  {
+    print TEMP "$num  ";
+    write TEMP;
+  }
+}
+
+#Do not allow the empty list
+print "$num  #\n" if ($output == 0);
+
+#Cliose the files
+close TEMP;
+close LIST;
+
+if ($deleted) ##if some messages expired
+{
+  rename ($TEMP_FILE, $list_name) or die "rename: $!\n";
+}
+else
+{
+  unlink $TEMP_FILE;
+}
+
+print "$deleted message(s) deleted.\n";
+
+#### END OF SCRIPT #########################################################
